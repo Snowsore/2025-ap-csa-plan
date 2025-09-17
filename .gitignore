@@ -1,3 +1,4 @@
 *.class
 
 proprietary/
+javafx-sdk-*
