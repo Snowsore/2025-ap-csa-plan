@@ -32,7 +32,7 @@ public class RocketLander extends Application {
 
     // Game params
     private double gravity = 50; // px/s^2 downward
-    private double thrust = 250; // px/s^2 along rocket nose
+    private double thrust = 700; // px/s^2 along rocket nose
     private double rotSpeed = Math.toRadians(120); // rad/s
     private double fuel = 100; // %
     private boolean gameOver = false;
@@ -40,9 +40,9 @@ public class RocketLander extends Application {
     private double safeLandingSpeed = 40; // px/s
     private double safeLandingAngle = Math.toRadians(10); // from upright
     private double safeFuelMargin = 30; // %
-    private double fuelConsumptionRate = 5; // % per second at full thrust
+    private double fuelConsumptionRate = 1; // % per second at full thrust
     private double timer = 0;
-    private double defaultTimer = 180;
+    private double defaultTimer = 120;
 
     // Landing pad
     private double padX, padW;
@@ -140,9 +140,8 @@ public class RocketLander extends Application {
             @Override
             public void handle(long now) {
                 double dt = (now - lastTimeNs) / 1_000_000_000.0; // seconds
-                // Clamp dt to avoid huge jumps if window stalls
                 if (dt > 0.05)
-                    dt = 0.05;
+                    dt = 0.05; // clamp
                 lastTimeNs = now;
 
                 update(dt);
@@ -174,24 +173,22 @@ public class RocketLander extends Application {
             return;
 
         timer -= dt;
-
         if (timer <= 0) {
             message = "OUT OF TIME!";
             gameOver = true;
             return;
         }
 
-        // Auto-stabilizer (hold down arrow key)
+        // Auto-stabilizer (hold down S)
         if (stabilizer && fuel > 0) {
             double angleDeg = Math.toDegrees(angle + Math.PI / 2);
             double uprightError = normalizeAngleDeg(angleDeg);
             if (Math.abs(uprightError) > 1) {
-                if (uprightError > 0) {
-                    angle -= rotSpeed * dt * 1;
-                } else {
-                    angle += rotSpeed * dt * 1;
-                }
-                fuel -= fuelConsumptionRate * 0.5 * dt; // burn rate
+                if (uprightError > 0)
+                    angle -= rotSpeed * dt;
+                else
+                    angle += rotSpeed * dt;
+                fuel -= fuelConsumptionRate * 0.5 * dt;
                 if (fuel < 0)
                     fuel = 0;
             }
@@ -219,17 +216,11 @@ public class RocketLander extends Application {
         x += vx * dt;
         y += vy * dt;
 
-        // Spawn exhaust particles if moving (or thrusting)
+        // Spawn exhaust particles
         spawnExhaust(dt);
 
         // Update particles
         updateParticles(dt);
-
-        // Screen wrap horizontally
-        if (x < -20)
-            x = W + 20;
-        if (x > W + 20)
-            x = -20;
 
         // Ground collision
         if (y >= GROUND_Y) {
@@ -259,70 +250,52 @@ public class RocketLander extends Application {
         double speed = Math.hypot(vx, vy);
         boolean moving = speed > 5;
 
-        if (!moving && !(thrusting && fuel > 0) || gameOver)
+        if ((!moving && !(thrusting && fuel > 0)) || gameOver)
             return;
 
-        // Nozzle world position & tail direction (unit vector pointing "out of engine")
+        // Nozzle world position & tail direction
         double[] nozzle = getNozzlePosition();
         double nx = nozzle[0], ny = nozzle[1];
-        // Tail direction is perpendicular to rocket "up" vector
-        // angle + 90° points nose-up; tail is opposite of that along body axis
+
         double ca = Math.cos(angle + Math.PI / 2);
         double sa = Math.sin(angle + Math.PI / 2);
-        // Tail direction points DOWN the body (positive along ( -sa, ca ) from center
-        // to nozzle )
-        // But we want particle direction away from the engine:
-        double tx = -sa; // unit tail direction x
-        double ty = ca; // unit tail direction y
+        double tx = -sa; // tail/outflow direction
+        double ty = ca;
 
-        // Emission rate higher when thrusting, otherwise subtle trail
-        double baseRate = thrusting && fuel > 0 ? 140 : 35; // particles per second
+        double baseRate = thrusting && fuel > 0 ? 140 : 35; // particles/s
         int count = (int) Math.ceil(baseRate * dt);
 
         for (int i = 0; i < count; i++) {
-            // Jitter spawn point around nozzle
             double jitterR = 3.0;
             double px = nx + (rnd.nextDouble() * 2 - 1) * jitterR;
             double py = ny + (rnd.nextDouble() * 2 - 1) * jitterR;
 
-            // Initial velocity: strong push along tail + inherit a fraction of rocket
-            // velocity + lateral jitter
             double push = thrusting && fuel > 0 ? (160 + rnd.nextDouble() * 60) : (40 + rnd.nextDouble() * 40);
-            double inherit = 0.25; // inherit some rocket motion
-            // small sideways spread
+            double inherit = 0.25;
             double lateral = (rnd.nextDouble() * 2 - 1) * 40;
 
-            // Two orthogonal unit vectors around tail
-            double lx = ca; // perpendicular to tail
+            double lx = ca;
             double ly = sa;
 
             double pvx = tx * push + vx * inherit + lx * lateral;
             double pvy = ty * push + vy * inherit + ly * lateral;
 
-            // Life & size
             double life = (thrusting && fuel > 0 ? 3.6 : 0.45) * (0.75 + rnd.nextDouble() * 0.5);
-            double s0 = 4 + rnd.nextDouble() * 3; // start size
-            double s1 = 1 + rnd.nextDouble() * 1.5; // end size
+            double s0 = 4 + rnd.nextDouble() * 3;
+            double s1 = 1 + rnd.nextDouble() * 1.5;
 
-            // Colors: hot to cool
-            Color c0 = thrusting && fuel > 0
-                    ? Color.web("#ffd166") // warm yellow
-                    : Color.web("#a8b3ff"); // faint bluish trail
-            Color c1 = thrusting && fuel > 0
-                    ? Color.web("#ff4d4d") // red/orange fade
-                    : Color.web("#6f7cff"); // cooler fade
+            Color c0 = thrusting && fuel > 0 ? Color.web("#ffd166") : Color.web("#a8b3ff");
+            Color c1 = thrusting && fuel > 0 ? Color.web("#ff4d4d") : Color.web("#6f7cff");
 
             particles.add(new Particle(px, py, pvx, pvy, s0, s1, life, c0, c1));
         }
 
-        // Soft cap to avoid runaway
         if (particles.size() > 1200) {
             particles.subList(0, particles.size() - 1200).clear();
         }
     }
 
     private void updateParticles(double dt) {
-        // Light drag so trails curve nicely
         double drag = 0.85;
         Iterator<Particle> it = particles.iterator();
         while (it.hasNext()) {
@@ -354,63 +327,79 @@ public class RocketLander extends Application {
     }
 
     private void render(GraphicsContext g) {
-        // Background
+        // Background (screen space)
         g.setFill(Color.web("#0b1021"));
         g.fillRect(0, 0, W, H);
 
-        // Stars
+        // === CAMERA: translate world so the rocket is at screen center ===
+        double camX = W / 2.0 - x;
+        double camY = H / 2.0 - y;
+
+        g.save();
+        g.translate(camX, camY);
+
+        // ------ World-space rendering (moves with camera) ------
+
+        // Stars (simple pseudo field)
         g.setFill(Color.web("#b2c1ff", 0.5));
         for (int i = 0; i < 80; i++) {
-            double sx = (i * 97) % W;
+            double sx = (i * 97) % W; // demo star positions
             double sy = (i * 53) % (H - 100);
             g.fillRect(sx, sy, 2, 2);
         }
 
-        // Ground
+        // Ground & pad
         g.setFill(Color.web("#1f2b3e"));
-        g.fillRect(0, GROUND_Y, W, H - GROUND_Y);
+        g.fillRect(-10_000, GROUND_Y, 20_000, 10_000); // wide ground strip
         g.setStroke(Color.web("#3c557a"));
         g.setLineWidth(2);
-        g.strokeLine(0, GROUND_Y, W, GROUND_Y);
+        g.strokeLine(-10_000, GROUND_Y, 10_000, GROUND_Y);
 
-        // Landing pad
         g.setFill(Color.web("#354f6b"));
         g.fillRect(padX, GROUND_Y - 6, padW, 6);
 
-        // Particles (draw behind rocket)
+        // Particles
         for (Particle p : particles)
             p.render(g);
 
         // Rocket
         drawRocket(g);
 
-        // HUD
+        g.restore(); // === end camera transform ===
+
+        // ------ HUD (screen space; does not move) ------
         g.setFill(Color.WHITE);
         g.setFont(Font.font("Consolas", 18));
-        g.fillText("Controls: ← → rotate, ↑ thrust, R reset", 16, 32);
+        g.fillText("Controls: ← → rotate, ↑ thrust, S stabilizer, R reset", 16, 32);
 
         double speed = Math.hypot(vx, vy);
         double angleDeg = Math.toDegrees(angle + Math.PI / 2);
 
         g.setFill(fuel > safeFuelMargin ? Color.LIME : Color.ORANGERED);
-        g.fillText("Fuel: " + (int) fuel + "%", x + 24, y);
+        g.fillText("Fuel: " + (int) fuel + "%", 16, 64);
+
         g.setFill(speed < safeLandingSpeed ? Color.LIME : Color.ORANGERED);
-        g.fillText(String.format("Speed: %.0f px/s", speed), x + 24, y + 16);
+        g.fillText(String.format("Speed: %.0f px/s", speed), 16, 86);
+
         g.setFill(Math.abs(normalizeAngleDeg(angleDeg)) < Math.toDegrees(safeLandingAngle) ? Color.LIME
                 : Color.ORANGERED);
-        g.fillText("Angle: " + (int) angleDeg + "°", x + 24, y + 32);
+        g.fillText("Angle: " + (int) angleDeg + "°", 16, 108);
 
         g.setFill(timer > 10 ? Color.LIME : Color.ORANGERED);
-        g.fillText("Time: " + (int) timer + "s", x + 24, y + 48);
+        g.fillText("Time: " + (int) timer + "s", 16, 130);
+
+        g.setFill(Color.WHITE);
+        g.fillText("Distance to ground: " + (int) (GROUND_Y - y) + " px", 16, 152);
 
         if (gameOver) {
             g.setFont(Font.font("Consolas", 32));
             g.setFill(message.startsWith("SAFE") ? Color.LIME : Color.ORANGERED);
-            g.fillText(message, 16, 140);
+            g.fillText(message, 16, 170);
             g.setFont(Font.font("Consolas", 20));
             g.setFill(Color.WHITE);
-            g.fillText("Press R to try again.", 16, 160);
+            g.fillText("Press R to try again.", 16, 196);
         }
+
     }
 
     private void drawRocket(GraphicsContext g) {
@@ -434,7 +423,7 @@ public class RocketLander extends Application {
         g.setLineWidth(1.5);
         g.strokePolygon(sx, sy, 3);
 
-        // Optional core flame when thrusting
+        // Core flame when thrusting
         if (thrusting && fuel > 0 && !gameOver) {
             double fx = x + (0) * ca - (ROCKET_H / 2 + 8) * sa;
             double fy = y + (0) * sa + (ROCKET_H / 2 + 8) * ca;
