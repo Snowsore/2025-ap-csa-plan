@@ -1,1 +1,0 @@
-javac --module-path ".\javafx-sdk-21.0.8\lib\" --add-modules javafx.controls .\RocketLander.java; java --module-path ".\javafx-sdk-21.0.8\lib\" --add-modules javafx.controls RocketLander
