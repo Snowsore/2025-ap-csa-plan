@@ -1,6 +1,6 @@
-package com.example.fx;
+package org.example.fx;
 
-import com.example.core.*;
+import org.example.core.*;
 import javafx.scene.*;
 import javafx.scene.paint.Color;
 import javafx.scene.paint.PhongMaterial;
