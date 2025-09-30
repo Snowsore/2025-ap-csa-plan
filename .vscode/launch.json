@@ -2,20 +2,6 @@
   "configurations": [
     {
       "type": "java",
-      "name": "App",
-      "request": "launch",
-      "mainClass": "App",
-      "projectName": "2025_AP_CSA_Plan_996a3d4d"
-    },
-    {
-      "type": "java",
-      "name": "Main",
-      "request": "launch",
-      "mainClass": "Main",
-      "projectName": "2025_AP_CSA_Plan_996a3d4d"
-    },
-    {
-      "type": "java",
       "name": "RocketLander",
       "request": "launch",
       "mainClass": "RocketLander",
