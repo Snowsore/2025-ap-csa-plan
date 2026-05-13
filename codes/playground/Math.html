@@ -1,0 +1,436 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <title>Math Canvas 3D Playground</title>
+    <style>
+      * {
+        margin: 0;
+        padding: 0;
+        box-sizing: border-box;
+      }
+      body {
+        background: #111;
+        overflow: hidden;
+      }
+      canvas {
+        display: block;
+      }
+      #hud {
+        position: fixed;
+        top: 10px;
+        left: 12px;
+        color: #7df;
+        font: 12px monospace;
+        pointer-events: none;
+        line-height: 1.7;
+        text-shadow: 0 0 6px #000;
+      }
+    </style>
+  </head>
+  <body>
+    <canvas id="canvas"></canvas>
+    <div id="hud"></div>
+
+    <script>
+      // ── Canvas setup ──────────────────────────────────────────
+      const canvas = document.getElementById("canvas");
+      const ctx = canvas.getContext("2d");
+
+      function resize() {
+        canvas.width = window.innerWidth;
+        canvas.height = window.innerHeight;
+      }
+      resize();
+      window.addEventListener("resize", resize);
+
+      const W = () => canvas.width;
+      const H = () => canvas.height;
+      const CX = () => canvas.width / 2;
+      const CY = () => canvas.height / 2;
+
+      // ── Camera ────────────────────────────────────────────────
+      // rx = pitch, ry = yaw. Drag to orbit, scroll to zoom.
+      const cam = { rx: 0.4, ry: 0.5, dist: 700, fov: 600 };
+
+      let drag = null;
+      canvas.addEventListener("mousedown", (e) => {
+        drag = { mx: e.clientX, my: e.clientY, rx: cam.rx, ry: cam.ry };
+      });
+      window.addEventListener("mousemove", (e) => {
+        if (!drag) return;
+        cam.ry = drag.ry + (e.clientX - drag.mx) * 0.005;
+        cam.rx = Math.max(
+          -1.5,
+          Math.min(1.5, drag.rx - (e.clientY - drag.my) * 0.005),
+        );
+      });
+      window.addEventListener("mouseup", () => {
+        drag = null;
+      });
+      canvas.addEventListener(
+        "wheel",
+        (e) => {
+          cam.dist = Math.max(100, cam.dist + e.deltaY * 0.8);
+        },
+        { passive: true },
+      );
+
+      let touch0 = null;
+      canvas.addEventListener("touchstart", (e) => {
+        const p = e.touches[0];
+        touch0 = { mx: p.clientX, my: p.clientY, rx: cam.rx, ry: cam.ry };
+      });
+      canvas.addEventListener("touchmove", (e) => {
+        if (!touch0) return;
+        const p = e.touches[0];
+        cam.ry = touch0.ry + (p.clientX - touch0.mx) * 0.005;
+        cam.rx = Math.max(
+          -1.5,
+          Math.min(1.5, touch0.rx - (p.clientY - touch0.my) * 0.005),
+        );
+      });
+      canvas.addEventListener("touchend", () => {
+        touch0 = null;
+      });
+
+      // ── 3D → screen projection ────────────────────────────────
+      // Returns [screenX, screenY, perspScale, depth] or null if behind camera.
+      function project(x, y, z) {
+        const cy = Math.cos(cam.ry),
+          sy = Math.sin(cam.ry);
+        let rx = x * cy - z * sy;
+        let rz = x * sy + z * cy;
+        const cx = Math.cos(cam.rx),
+          sx = Math.sin(cam.rx);
+        let ry = y * cx - rz * sx;
+        rz = y * sx + rz * cx;
+        const depth = rz + cam.dist;
+        if (depth <= 0.001) return null;
+        const s = cam.fov / depth;
+        return [CX() + rx * s, CY() - ry * s, s, depth];
+      }
+
+      // ── 3D grid & axes ────────────────────────────────────────
+      function _seg(x1, y1, z1, x2, y2, z2, color, lw) {
+        const a = project(x1, y1, z1),
+          b = project(x2, y2, z2);
+        if (!a || !b) return;
+        ctx.beginPath();
+        ctx.moveTo(a[0], a[1]);
+        ctx.lineTo(b[0], b[1]);
+        ctx.strokeStyle = color;
+        ctx.lineWidth = lw;
+        ctx.stroke();
+      }
+
+      function _label(x, y, z, text, color) {
+        const p = project(x, y, z);
+        if (!p) return;
+        ctx.fillStyle = color;
+        ctx.font = "11px monospace";
+        ctx.fillText(text, p[0] + 4, p[1] - 4);
+      }
+
+      function drawAxes() {
+        const L = 300,
+          S = 50;
+        for (let i = -L; i <= L; i += S) {
+          _seg(i, 0, -L, i, 0, L, "#1e1e30", 1);
+          _seg(-L, 0, i, L, 0, i, "#1e1e30", 1);
+        }
+        _seg(-L, 0, 0, L, 0, 0, "#6a1a1a", 1.5); // X red
+        _seg(0, -L, 0, 0, L, 0, "#1a6a1a", 1.5); // Y green
+        _seg(0, 0, -L, 0, 0, L, "#1a1a6a", 1.5); // Z blue
+        _label(L + 10, 0, 0, "X", "#c44");
+        _label(0, L + 10, 0, "Y", "#4c4");
+        _label(0, 0, L + 10, "Z", "#44c");
+      }
+
+      // ── Object system ─────────────────────────────────────────
+      const objects = [];
+
+      /**
+       * add({ ...params }) — spawn a 3D animated object.
+       *
+       * Common:
+       *   type          "dot" | "curve" | "surface"
+       *   x, y, z       number  OR  t => expression
+       *   vx, vy, vz    velocity per frame (when x/y/z is a number)
+       *   size          dot radius (auto-scales with depth)
+       *   fill          CSS fill color
+       *   stroke        CSS stroke color
+       *   lw            line width
+       *   bounce        true = reflect inside ±300 box
+       *   update(o,t)   fully custom per-frame callback
+       *
+       * type:"curve"  — parametric 3D path
+       *   xFn(s,t), yFn(s,t), zFn(s,t)
+       *   sMin, sMax, sStep
+       *
+       * type:"surface"  — wireframe height field over XZ plane
+       *   yFn(x, z, t)
+       *   range   half-size of the XZ grid  (default 200)
+       *   res     cells per axis             (default 20)
+       */
+      function add(params) {
+        const _xFn = typeof params.x === "function" ? params.x : null;
+        const _yFn = typeof params.y === "function" ? params.y : null;
+        const _zFn = typeof params.z === "function" ? params.z : null;
+        objects.push({
+          type: "dot",
+          x: 0,
+          y: 0,
+          z: 0,
+          vx: 0,
+          vy: 0,
+          vz: 0,
+          size: 8,
+          fill: "#00ffcc",
+          stroke: "#7df",
+          lw: 1.5,
+          bounce: false,
+          update: null,
+          xFn: null,
+          yFn: null,
+          zFn: null,
+          sMin: 0,
+          sMax: Math.PI * 2,
+          sStep: 0.05,
+          yFn: null,
+          range: 200,
+          res: 20,
+          ...params,
+          x: _xFn ? 0 : typeof params.x === "number" ? params.x : 0,
+          y: _yFn ? 0 : typeof params.y === "number" ? params.y : 0,
+          z: _zFn ? 0 : typeof params.z === "number" ? params.z : 0,
+          _xFn,
+          _yFn,
+          _zFn,
+        });
+      }
+
+      /** Remove all objects from the scene. */
+      function clear() {
+        objects.length = 0;
+      }
+
+      // ── Per-object step ───────────────────────────────────────
+      function stepObject(o) {
+        if (o.update) {
+          o.update(o, t);
+          return;
+        }
+        if (o._xFn) o.x = o._xFn(t);
+        else o.x += o.vx;
+        if (o._yFn) o.y = o._yFn(t);
+        else o.y += o.vy;
+        if (o._zFn) o.z = o._zFn(t);
+        else o.z += o.vz;
+        // resolve fill / stroke if they are functions of t
+        o._fill = typeof o.fill === "function" ? o.fill(t) : o.fill;
+        o._stroke = typeof o.stroke === "function" ? o.stroke(t) : o.stroke;
+        if (o.bounce) {
+          const B = 300;
+          if (o.x > B) {
+            o.x = B;
+            o.vx *= -1;
+          }
+          if (o.x < -B) {
+            o.x = -B;
+            o.vx *= -1;
+          }
+          if (o.y > B) {
+            o.y = B;
+            o.vy *= -1;
+          }
+          if (o.y < -B) {
+            o.y = -B;
+            o.vy *= -1;
+          }
+          if (o.z > B) {
+            o.z = B;
+            o.vz *= -1;
+          }
+          if (o.z < -B) {
+            o.z = -B;
+            o.vz *= -1;
+          }
+        }
+      }
+
+      // ── Per-object draw ───────────────────────────────────────
+      function drawObject(o) {
+        switch (o.type) {
+          case "dot": {
+            const p = project(o.x, o.y, o.z);
+            if (!p) return;
+            const r = Math.max(1, o.size * p[2]);
+            ctx.beginPath();
+            ctx.arc(p[0], p[1], r, 0, Math.PI * 2);
+            ctx.fillStyle = o._fill;
+            ctx.fill();
+            break;
+          }
+          case "curve": {
+            ctx.beginPath();
+            ctx.strokeStyle = o._stroke;
+            ctx.lineWidth = o.lw;
+            let first = true;
+            for (let s = o.sMin; s <= o.sMax + 1e-9; s += o.sStep) {
+              const px = o.xFn ? o.xFn(s, t) : 0;
+              const py = o.yFn ? o.yFn(s, t) : 0;
+              const pz = o.zFn ? o.zFn(s, t) : 0;
+              const p = project(px, py, pz);
+              if (!p) {
+                first = true;
+                continue;
+              }
+              first
+                ? (ctx.moveTo(p[0], p[1]), (first = false))
+                : ctx.lineTo(p[0], p[1]);
+            }
+            ctx.stroke();
+            break;
+          }
+          case "surface": {
+            const { range, res, yFn: fn, lw } = o;
+            const step = (range * 2) / res;
+            ctx.lineWidth = lw || 1;
+            ctx.strokeStyle = o._stroke;
+            for (let xi = 0; xi <= res; xi++) {
+              const wx = -range + xi * step;
+              ctx.beginPath();
+              let first = true;
+              for (let zi = 0; zi <= res; zi++) {
+                const wz = -range + zi * step;
+                const wy = fn ? fn(wx, wz, t) : 0;
+                const p = project(wx, wy, wz);
+                if (!p) {
+                  first = true;
+                  continue;
+                }
+                first
+                  ? (ctx.moveTo(p[0], p[1]), (first = false))
+                  : ctx.lineTo(p[0], p[1]);
+              }
+              ctx.stroke();
+            }
+            for (let zi = 0; zi <= res; zi++) {
+              const wz = -range + zi * step;
+              ctx.beginPath();
+              let first = true;
+              for (let xi = 0; xi <= res; xi++) {
+                const wx = -range + xi * step;
+                const wy = fn ? fn(wx, wz, t) : 0;
+                const p = project(wx, wy, wz);
+                if (!p) {
+                  first = true;
+                  continue;
+                }
+                first
+                  ? (ctx.moveTo(p[0], p[1]), (first = false))
+                  : ctx.lineTo(p[0], p[1]);
+              }
+              ctx.stroke();
+            }
+            break;
+          }
+        }
+      }
+
+      // ── Global time ───────────────────────────────────────────
+      let t = 0;
+
+      // ── Trail mode ────────────────────────────────────────────
+      // "clear" | "trail" | "fade"
+      let trailMode = "clear";
+
+      // ── Animation loop ────────────────────────────────────────
+      function loop() {
+        if (trailMode === "clear") {
+          ctx.clearRect(0, 0, W(), H());
+          drawAxes();
+        } else if (trailMode === "fade") {
+          ctx.fillStyle = "rgba(17,17,17,0.22)";
+          ctx.fillRect(0, 0, W(), H());
+          drawAxes();
+        }
+        t += 0.016;
+        objects.forEach((o) => {
+          stepObject(o);
+          drawObject(o);
+        });
+        document.getElementById("hud").textContent =
+          `t = ${t.toFixed(3)}   |   drag to orbit · scroll to zoom`;
+        requestAnimationFrame(loop);
+      }
+
+      drawAxes();
+      loop();
+
+      // ════════════════════════════════════════════════════════
+      //  DEFINE YOUR ANIMATIONS BELOW
+      //
+      //  x, y, z  →  number  OR  t => expression
+      //  type: "dot" | "curve" | "surface"
+      // ════════════════════════════════════════════════════════
+
+      // Example 1 — dot tracing a 3D helix
+      add({
+        type: "dot",
+        x: (t) => Math.cos(t * 2) * 150,
+        y: (t) => ((t * 25) % 300) - 150,
+        z: (t) => Math.sin(t * 2) * 150,
+        size: 10,
+        fill: "#00ffcc",
+      });
+
+      // Example 2 — Lissajous dot in 3D
+      add({
+        type: "dot",
+        x: (t) => Math.sin(t * 3) * 180,
+        y: (t) => Math.sin(t * 2) * 100,
+        z: (t) => Math.cos(t * 5) * 150,
+        size: 8,
+        fill: "#ff6688",
+      });
+
+      // Example 3 — animated parametric helix curve
+      add({
+        type: "curve",
+        xFn: (s, t) => Math.cos(s + t) * 120,
+        yFn: (s, t) => s * 18,
+        zFn: (s, t) => Math.sin(s + t) * 120,
+        sMin: -Math.PI * 3,
+        sMax: Math.PI * 3,
+        sStep: 0.08,
+        stroke: "#7df",
+        lw: 1.5,
+      });
+
+      // Example 4 — ripple wave surface
+      add({
+        type: "surface",
+        yFn: (x, z, t) => {
+          const r = Math.sqrt(x * x + z * z);
+          return Math.sin(r * 0.05 - t * 3) * 50;
+        },
+        range: 220,
+        res: 28,
+        stroke: "#2a5a4a",
+        lw: 0.8,
+      });
+
+      for (let i = 0; i < 10; i++) {
+        add({
+          type: "dot",
+          x: (t) => Math.cos(t * 2 + i * 0.1) * (100 + i * 3),
+          y: (t) => Math.cos(t * 3 + i * 0.2) * (100 + i * 3),
+          z: (t) => Math.sin(t * 3 + i * 0.2) * (100 + i * 3),
+          size: 1,
+        });
+      }
+    </script>
+  </body>
+</html>
